@@ -1,0 +1,23 @@
+# Render deployment configuration for MCP Gateway
+services:
+  - type: web
+    name: mcp-render-gateway
+    env: node
+    plan: free  # Change to starter+ for production
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: LOG_LEVEL
+        value: info
+      - key: OPENROUTER_API_KEY
+        sync: false  # Must be set in Render dashboard
+      - key: GATEWAY_API_KEY
+        sync: false  # Must be set in Render dashboard
+      - key: DEFAULT_MODEL
+        value: openrouter/auto
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.io/api/v1

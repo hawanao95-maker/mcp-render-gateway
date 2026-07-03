@@ -1,0 +1,28 @@
+{
+  "name": "mcp-render-gateway",
+  "version": "1.0.0",
+  "description": "Production-ready MCP gateway for OpenRouter and AI model providers",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "mcp",
+    "openrouter",
+    "ai-gateway",
+    "sse",
+    "streaming"
+  ],
+  "author": "hawanao95-maker",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1",
+    "axios": "^1.6.2"
+  },
+  "devDependencies": {}
+}
