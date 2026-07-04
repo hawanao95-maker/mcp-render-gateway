@@ -25,8 +25,9 @@ export default function createServer() {
   // Health check (no auth required)
   app.use('/health', healthRoutes);
 
-  // API routes (with optional auth)
-  app.use('/openrouter', authMiddleware, mcpRoutes);
+  // API routes at root level (with optional auth)
+  // This enables both /sse and /openrouter/sse
+  app.use('/', authMiddleware, mcpRoutes);
 
   // 404 handler
   app.use((req, res) => {
