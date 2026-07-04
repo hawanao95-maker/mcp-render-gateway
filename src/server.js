@@ -25,8 +25,9 @@ export default function createServer() {
   // Health check (no auth required)
   app.use('/health', healthRoutes);
 
-  // API routes at root level (WITHOUT auth for SSE/root endpoints)
-  // SSE endpoints must be accessible without authentication
+  // Mount the MCP router on BOTH paths for complete compatibility
+  // This ensures Bolt can hit either the root path or the /openrouter prefix
+  app.use('/openrouter', mcpRoutes);
   app.use('/', mcpRoutes);
 
   // 404 handler - must return JSON
