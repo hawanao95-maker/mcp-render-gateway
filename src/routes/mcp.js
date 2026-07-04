@@ -9,22 +9,24 @@ const openrouter = new OpenRouter();
 // Store active SSE connections
 const sseConnections = new Map();
 
-// SSE endpoint for streaming responses
-router.get('/sse', (req, res) => {
+/**
+ * Shared SSE handler for establishing Server-Sent Events connection
+ * Works with both GET and POST requests
+ */
+function handleSse(req, res) {
   const sessionId = uuidv4();
   
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('X-Accel-Buffering', 'no');
 
   // Send initial connection message
-  res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}
-
-`);
+  res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
 
   sseConnections.set(sessionId, res);
-  log('info', 'SSE client connected', { sessionId });
+  log('info', 'SSE client connected', { sessionId, method: req.method });
 
   // Keep connection alive with heartbeat
   const heartbeat = setInterval(() => {
@@ -41,7 +43,26 @@ router.get('/sse', (req, res) => {
     sseConnections.delete(sessionId);
     log('info', 'SSE client disconnected', { sessionId });
   });
-});
+
+  // Handle errors
+  req.on('error', (error) => {
+    log('error', 'SSE request error', { sessionId, error: error.message });
+    clearInterval(heartbeat);
+    sseConnections.delete(sessionId);
+  });
+
+  res.on('error', (error) => {
+    log('error', 'SSE response error', { sessionId, error: error.message });
+    clearInterval(heartbeat);
+    sseConnections.delete(sessionId);
+  });
+}
+
+// SSE endpoint - handles both GET and POST for compatibility with Bolt
+router.route('/sse').get(handleSse).post(handleSse);
+
+// SSE endpoint with /openrouter prefix - handles both GET and POST
+router.route('/openrouter/sse').get(handleSse).post(handleSse);
 
 // Messages endpoint for MCP protocol
 router.post('/messages', async (req, res) => {
@@ -70,9 +91,7 @@ router.post('/messages', async (req, res) => {
       // Stream response through SSE
       for await (const chunk of response) {
         if (sseRes.writable) {
-          sseRes.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}
-
-`);
+          sseRes.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
         }
       }
 
@@ -132,8 +151,34 @@ router.get('/models', async (req, res) => {
   }
 });
 
+// List available models (alternative endpoint)
+router.get('/openrouter/models', async (req, res) => {
+  try {
+    const models = await openrouter.listModels();
+    res.json({
+      object: 'list',
+      data: models,
+    });
+  } catch (error) {
+    log('error', 'Models listing error', { error: error.message });
+    res.status(500).json({
+      error: 'Failed to fetch models',
+      message: error.message,
+    });
+  }
+});
+
 // Health check for this service
 router.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    openrouter: 'connected',
+    activeSessions: sseConnections.size,
+  });
+});
+
+// Health check with /openrouter prefix
+router.get('/openrouter/health', (req, res) => {
   res.json({
     status: 'healthy',
     openrouter: 'connected',
