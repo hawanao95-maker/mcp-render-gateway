@@ -12,17 +12,28 @@ const sseConnections = new Map();
 /**
  * Shared SSE handler for establishing Server-Sent Events connection
  * Works with both GET and POST requests on any path
+ * Includes Render Nginx buffering bypass for persistent streams
  */
 function handleSse(req, res) {
   const sessionId = uuidv4();
   
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('X-Accel-Buffering', 'no');
+  // Use writeHead to set headers BEFORE any data is sent
+  // This ensures Render's Nginx proxy doesn't buffer the response
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // Critical: Disables Nginx buffering on Render
+    'Access-Control-Allow-Origin': '*',
+  });
 
-  // Send initial connection message
+  // Flush headers immediately to wake up the stream
+  res.flushHeaders();
+
+  // Send initial ping to establish the stream connection
+  res.write(': ping\n\n');
+
+  // Send connection message with sessionId
   res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
 
   sseConnections.set(sessionId, res);
