@@ -11,7 +11,7 @@ const sseConnections = new Map();
 
 /**
  * Shared SSE handler for establishing Server-Sent Events connection
- * Works with both GET and POST requests
+ * Works with both GET and POST requests on any path
  */
 function handleSse(req, res) {
   const sessionId = uuidv4();
@@ -26,7 +26,7 @@ function handleSse(req, res) {
   res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
 
   sseConnections.set(sessionId, res);
-  log('info', 'SSE client connected', { sessionId, method: req.method });
+  log('info', 'SSE client connected', { sessionId, path: req.path, method: req.method });
 
   // Keep connection alive with heartbeat
   const heartbeat = setInterval(() => {
@@ -58,7 +58,10 @@ function handleSse(req, res) {
   });
 }
 
-// SSE endpoint - handles both GET and POST for compatibility with Bolt
+// Root path - handles both GET and POST for direct Bolt connections
+router.route('/').get(handleSse).post(handleSse);
+
+// SSE endpoint - handles both GET and POST
 router.route('/sse').get(handleSse).post(handleSse);
 
 // SSE endpoint with /openrouter prefix - handles both GET and POST
@@ -66,6 +69,76 @@ router.route('/openrouter/sse').get(handleSse).post(handleSse);
 
 // Messages endpoint for MCP protocol
 router.post('/messages', async (req, res) => {
+  try {
+    const { messages, model, sessionId, stream = false } = req.body;
+
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({
+        error: 'Invalid request',
+        message: 'messages array is required',
+      });
+    }
+
+    log('info', 'Processing message request', {
+      sessionId: sessionId || 'none',
+      messageCount: messages.length,
+      stream,
+      model: model || 'default',
+    });
+
+    // If streaming, send through SSE
+    if (stream && sessionId && sseConnections.has(sessionId)) {
+      const sseRes = sseConnections.get(sessionId);
+      const response = await openrouter.createCompletion(messages, model, true);
+
+      // Stream response through SSE
+      for await (const chunk of response) {
+        if (sseRes.writable) {
+          sseRes.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+        }
+      }
+
+      return res.json({
+        status: 'streaming',
+        sessionId,
+      });
+    }
+
+    // Standard response
+    const response = await openrouter.createCompletion(messages, model, false);
+    
+    res.json({
+      id: uuidv4(),
+      object: 'text_completion',
+      created: Math.floor(Date.now() / 1000),
+      model: model || 'openrouter/auto',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: response,
+          },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+  } catch (error) {
+    log('error', 'Message processing error', { error: error.message });
+    res.status(500).json({
+      error: 'Message processing failed',
+      message: error.message,
+    });
+  }
+});
+
+// Messages endpoint with /openrouter prefix
+router.post('/openrouter/messages', async (req, res) => {
   try {
     const { messages, model, sessionId, stream = false } = req.body;
 
@@ -151,7 +224,7 @@ router.get('/models', async (req, res) => {
   }
 });
 
-// List available models (alternative endpoint)
+// List available models with /openrouter prefix
 router.get('/openrouter/models', async (req, res) => {
   try {
     const models = await openrouter.listModels();
