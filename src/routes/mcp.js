@@ -35,9 +35,9 @@ function handleSse(req, res) {
   res.write(': ping\n\n');
 
   // Step 3: Send the MANDATORY Model Context Protocol endpoint event
-  // This tells Bolt where to POST tool execution requests
-  const endpointPath = '/openrouter/messages';
-  res.write(`event: endpoint\ndata: ${encodeURIComponent(endpointPath)}\n\n`);
+  // Use absolute URL to eliminate any path interpretation issues
+  const absoluteEndpoint = 'https://mcp-render-gateway.onrender.com/openrouter/messages';
+  res.write(`event: endpoint\ndata: ${encodeURIComponent(absoluteEndpoint)}\n\n`);
 
   // Step 4: Send connection acknowledgment with session metadata
   res.write(`event: connection\ndata: ${JSON.stringify({ sessionId, version: '1.0' })}\n\n`);
@@ -47,7 +47,7 @@ function handleSse(req, res) {
     sessionId, 
     path: req.path, 
     method: req.method,
-    endpoint: endpointPath 
+    endpoint: absoluteEndpoint 
   });
 
   // Keep connection alive with periodic heartbeat
@@ -80,6 +80,85 @@ function handleSse(req, res) {
   });
 }
 
+/**
+ * Unified message handler for MCP protocol
+ * Processes tool execution requests from Bolt
+ */
+async function handleMessage(req, res) {
+  try {
+    const { messages, model, sessionId, stream = false } = req.body;
+
+    // Handle empty/initialization requests from Bolt protocol handshake
+    if (!messages) {
+      log('info', 'Initialization request received', { sessionId });
+      return res.status(200).json({ success: true, ready: true });
+    }
+
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({
+        error: 'Invalid request',
+        message: 'messages array is required',
+      });
+    }
+
+    log('info', 'Processing message request', {
+      sessionId: sessionId || 'none',
+      messageCount: messages.length,
+      stream,
+      model: model || 'default',
+    });
+
+    // If streaming, send through SSE
+    if (stream && sessionId && sseConnections.has(sessionId)) {
+      const sseRes = sseConnections.get(sessionId);
+      const response = await openrouter.createCompletion(messages, model, true);
+
+      // Stream response through SSE
+      for await (const chunk of response) {
+        if (sseRes.writable) {
+          sseRes.write(`event: message\ndata: ${JSON.stringify({ content: chunk })}\n\n`);
+        }
+      }
+
+      return res.json({
+        status: 'streaming',
+        sessionId,
+      });
+    }
+
+    // Standard response
+    const response = await openrouter.createCompletion(messages, model, false);
+    
+    return res.status(200).json({
+      id: uuidv4(),
+      object: 'text_completion',
+      created: Math.floor(Date.now() / 1000),
+      model: model || 'openrouter/auto',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: response,
+          },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      },
+    });
+  } catch (error) {
+    log('error', 'Message processing error', { error: error.message });
+    return res.status(500).json({
+      error: 'Message processing failed',
+      message: error.message,
+    });
+  }
+}
+
 // Root path - MCP entry point for direct connections (GET and POST)
 router.route('/').get(handleSse).post(handleSse);
 
@@ -89,158 +168,18 @@ router.route('/sse').get(handleSse).post(handleSse);
 // /openrouter/sse path - prefixed MCP entry point (GET and POST)
 router.route('/openrouter/sse').get(handleSse).post(handleSse);
 
-// POST /messages - MCP tool execution endpoint
-// Receives tool requests via HTTP POST after SSE handshake
-router.post('/messages', async (req, res) => {
-  try {
-    const { messages, model, sessionId, stream = false } = req.body;
+// BULLETPROOF message routing - catch every possible path variation
+// Standard paths
+router.post('/messages', handleMessage);
+router.post('/openrouter/messages', handleMessage);
 
-    // Handle empty/initialization requests from Bolt protocol handshake
-    if (!messages) {
-      log('info', 'Initialization request received', { sessionId });
-      return res.status(200).json({ success: true, ready: true });
-    }
+// Double-slash variations (in case Bolt formats paths with double slashes)
+router.post('//messages', handleMessage);
+router.post('//openrouter/messages', handleMessage);
 
-    if (!Array.isArray(messages)) {
-      return res.status(400).json({
-        error: 'Invalid request',
-        message: 'messages array is required',
-      });
-    }
-
-    log('info', 'Processing message request', {
-      sessionId: sessionId || 'none',
-      messageCount: messages.length,
-      stream,
-      model: model || 'default',
-    });
-
-    // If streaming, send through SSE
-    if (stream && sessionId && sseConnections.has(sessionId)) {
-      const sseRes = sseConnections.get(sessionId);
-      const response = await openrouter.createCompletion(messages, model, true);
-
-      // Stream response through SSE
-      for await (const chunk of response) {
-        if (sseRes.writable) {
-          sseRes.write(`event: message\ndata: ${JSON.stringify({ content: chunk })}\n\n`);
-        }
-      }
-
-      return res.json({
-        status: 'streaming',
-        sessionId,
-      });
-    }
-
-    // Standard response
-    const response = await openrouter.createCompletion(messages, model, false);
-    
-    return res.status(200).json({
-      id: uuidv4(),
-      object: 'text_completion',
-      created: Math.floor(Date.now() / 1000),
-      model: model || 'openrouter/auto',
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: response,
-          },
-          finish_reason: 'stop',
-        },
-      ],
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-      },
-    });
-  } catch (error) {
-    log('error', 'Message processing error', { error: error.message });
-    return res.status(500).json({
-      error: 'Message processing failed',
-      message: error.message,
-    });
-  }
-});
-
-// POST /openrouter/messages - Prefixed MCP tool execution endpoint
-router.post('/openrouter/messages', async (req, res) => {
-  try {
-    const { messages, model, sessionId, stream = false } = req.body;
-
-    // Handle empty/initialization requests from Bolt protocol handshake
-    if (!messages) {
-      log('info', 'Initialization request received', { sessionId });
-      return res.status(200).json({ success: true, ready: true });
-    }
-
-    if (!Array.isArray(messages)) {
-      return res.status(400).json({
-        error: 'Invalid request',
-        message: 'messages array is required',
-      });
-    }
-
-    log('info', 'Processing message request', {
-      sessionId: sessionId || 'none',
-      messageCount: messages.length,
-      stream,
-      model: model || 'default',
-    });
-
-    // If streaming, send through SSE
-    if (stream && sessionId && sseConnections.has(sessionId)) {
-      const sseRes = sseConnections.get(sessionId);
-      const response = await openrouter.createCompletion(messages, model, true);
-
-      // Stream response through SSE
-      for await (const chunk of response) {
-        if (sseRes.writable) {
-          sseRes.write(`event: message\ndata: ${JSON.stringify({ content: chunk })}\n\n`);
-        }
-      }
-
-      return res.json({
-        status: 'streaming',
-        sessionId,
-      });
-    }
-
-    // Standard response
-    const response = await openrouter.createCompletion(messages, model, false);
-    
-    return res.status(200).json({
-      id: uuidv4(),
-      object: 'text_completion',
-      created: Math.floor(Date.now() / 1000),
-      model: model || 'openrouter/auto',
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: response,
-          },
-          finish_reason: 'stop',
-        },
-      ],
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-      },
-    });
-  } catch (error) {
-    log('error', 'Message processing error', { error: error.message });
-    return res.status(500).json({
-      error: 'Message processing failed',
-      message: error.message,
-    });
-  }
-});
+// Catch-all for any other /messages variation
+router.post('*messages', handleMessage);
+router.post('*/messages', handleMessage);
 
 // GET /models - List available models
 router.get('/models', async (req, res) => {
