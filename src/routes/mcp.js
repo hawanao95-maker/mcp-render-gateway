@@ -11,38 +11,49 @@ const sseConnections = new Map();
 
 /**
  * Shared SSE handler for establishing Server-Sent Events connection
+ * Implements Model Context Protocol (MCP) SSE specification
  * Works with both GET and POST requests on any path
- * Includes Render Nginx buffering bypass for persistent streams
  */
 function handleSse(req, res) {
   const sessionId = uuidv4();
   
-  // Use writeHead to set headers BEFORE any data is sent
-  // This ensures Render's Nginx proxy doesn't buffer the response
+  // Step 1: Set response headers for SSE streaming
+  // Use writeHead to set ALL headers at once before any data
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no', // Critical: Disables Nginx buffering on Render
+    'X-Accel-Buffering': 'no', // Disables Nginx buffering on Render
     'Access-Control-Allow-Origin': '*',
   });
 
-  // Flush headers immediately to wake up the stream
+  // Flush headers immediately to wake up the stream through proxies
   res.flushHeaders();
 
-  // Send initial ping to establish the stream connection
+  // Step 2: Send MCP protocol initialization sequence
+  // First, a comment ping to establish the stream
   res.write(': ping\n\n');
 
-  // Send connection message with sessionId
-  res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
+  // Step 3: Send the MANDATORY Model Context Protocol endpoint event
+  // This tells Bolt where to POST tool execution requests
+  const endpointPath = '/openrouter/messages';
+  res.write(`event: endpoint\ndata: ${encodeURIComponent(endpointPath)}\n\n`);
+
+  // Step 4: Send connection acknowledgment with session metadata
+  res.write(`event: connection\ndata: ${JSON.stringify({ sessionId, version: '1.0' })}\n\n`);
 
   sseConnections.set(sessionId, res);
-  log('info', 'SSE client connected', { sessionId, path: req.path, method: req.method });
+  log('info', 'SSE client connected', { 
+    sessionId, 
+    path: req.path, 
+    method: req.method,
+    endpoint: endpointPath 
+  });
 
-  // Keep connection alive with heartbeat
+  // Keep connection alive with periodic heartbeat
   const heartbeat = setInterval(() => {
     if (res.writable) {
-      res.write(`:heartbeat\n\n`);
+      res.write(`: heartbeat\n\n`);
     } else {
       clearInterval(heartbeat);
       sseConnections.delete(sessionId);
@@ -55,7 +66,7 @@ function handleSse(req, res) {
     log('info', 'SSE client disconnected', { sessionId });
   });
 
-  // Handle errors
+  // Handle stream errors gracefully
   req.on('error', (error) => {
     log('error', 'SSE request error', { sessionId, error: error.message });
     clearInterval(heartbeat);
@@ -69,16 +80,17 @@ function handleSse(req, res) {
   });
 }
 
-// Root path - handles both GET and POST for direct Bolt connections
+// Root path - MCP entry point for direct connections (GET and POST)
 router.route('/').get(handleSse).post(handleSse);
 
-// SSE endpoint - handles both GET and POST
+// /sse path - alternative MCP entry point (GET and POST)
 router.route('/sse').get(handleSse).post(handleSse);
 
-// SSE endpoint with /openrouter prefix - handles both GET and POST
+// /openrouter/sse path - prefixed MCP entry point (GET and POST)
 router.route('/openrouter/sse').get(handleSse).post(handleSse);
 
-// Messages endpoint for MCP protocol
+// POST /messages - MCP tool execution endpoint
+// Receives tool requests via HTTP POST after SSE handshake
 router.post('/messages', async (req, res) => {
   try {
     const { messages, model, sessionId, stream = false } = req.body;
@@ -105,7 +117,7 @@ router.post('/messages', async (req, res) => {
       // Stream response through SSE
       for await (const chunk of response) {
         if (sseRes.writable) {
-          sseRes.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+          sseRes.write(`event: message\ndata: ${JSON.stringify({ content: chunk })}\n\n`);
         }
       }
 
@@ -148,7 +160,7 @@ router.post('/messages', async (req, res) => {
   }
 });
 
-// Messages endpoint with /openrouter prefix
+// POST /openrouter/messages - Prefixed MCP tool execution endpoint
 router.post('/openrouter/messages', async (req, res) => {
   try {
     const { messages, model, sessionId, stream = false } = req.body;
@@ -175,7 +187,7 @@ router.post('/openrouter/messages', async (req, res) => {
       // Stream response through SSE
       for await (const chunk of response) {
         if (sseRes.writable) {
-          sseRes.write(`data: ${JSON.stringify({ type: 'chunk', content: chunk })}\n\n`);
+          sseRes.write(`event: message\ndata: ${JSON.stringify({ content: chunk })}\n\n`);
         }
       }
 
@@ -218,7 +230,7 @@ router.post('/openrouter/messages', async (req, res) => {
   }
 });
 
-// List available models
+// GET /models - List available models
 router.get('/models', async (req, res) => {
   try {
     const models = await openrouter.listModels();
@@ -235,7 +247,7 @@ router.get('/models', async (req, res) => {
   }
 });
 
-// List available models with /openrouter prefix
+// GET /openrouter/models - List available models (prefixed)
 router.get('/openrouter/models', async (req, res) => {
   try {
     const models = await openrouter.listModels();
@@ -252,7 +264,7 @@ router.get('/openrouter/models', async (req, res) => {
   }
 });
 
-// Health check for this service
+// GET /health - Service health check
 router.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -261,7 +273,7 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Health check with /openrouter prefix
+// GET /openrouter/health - Service health check (prefixed)
 router.get('/openrouter/health', (req, res) => {
   res.json({
     status: 'healthy',
