@@ -95,7 +95,13 @@ router.post('/messages', async (req, res) => {
   try {
     const { messages, model, sessionId, stream = false } = req.body;
 
-    if (!messages || !Array.isArray(messages)) {
+    // Handle empty/initialization requests from Bolt protocol handshake
+    if (!messages) {
+      log('info', 'Initialization request received', { sessionId });
+      return res.status(200).json({ success: true, ready: true });
+    }
+
+    if (!Array.isArray(messages)) {
       return res.status(400).json({
         error: 'Invalid request',
         message: 'messages array is required',
@@ -130,7 +136,7 @@ router.post('/messages', async (req, res) => {
     // Standard response
     const response = await openrouter.createCompletion(messages, model, false);
     
-    res.json({
+    return res.status(200).json({
       id: uuidv4(),
       object: 'text_completion',
       created: Math.floor(Date.now() / 1000),
@@ -153,7 +159,7 @@ router.post('/messages', async (req, res) => {
     });
   } catch (error) {
     log('error', 'Message processing error', { error: error.message });
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Message processing failed',
       message: error.message,
     });
@@ -165,7 +171,13 @@ router.post('/openrouter/messages', async (req, res) => {
   try {
     const { messages, model, sessionId, stream = false } = req.body;
 
-    if (!messages || !Array.isArray(messages)) {
+    // Handle empty/initialization requests from Bolt protocol handshake
+    if (!messages) {
+      log('info', 'Initialization request received', { sessionId });
+      return res.status(200).json({ success: true, ready: true });
+    }
+
+    if (!Array.isArray(messages)) {
       return res.status(400).json({
         error: 'Invalid request',
         message: 'messages array is required',
@@ -200,7 +212,7 @@ router.post('/openrouter/messages', async (req, res) => {
     // Standard response
     const response = await openrouter.createCompletion(messages, model, false);
     
-    res.json({
+    return res.status(200).json({
       id: uuidv4(),
       object: 'text_completion',
       created: Math.floor(Date.now() / 1000),
@@ -223,7 +235,7 @@ router.post('/openrouter/messages', async (req, res) => {
     });
   } catch (error) {
     log('error', 'Message processing error', { error: error.message });
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Message processing failed',
       message: error.message,
     });
@@ -234,13 +246,13 @@ router.post('/openrouter/messages', async (req, res) => {
 router.get('/models', async (req, res) => {
   try {
     const models = await openrouter.listModels();
-    res.json({
+    return res.status(200).json({
       object: 'list',
       data: models,
     });
   } catch (error) {
     log('error', 'Models listing error', { error: error.message });
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Failed to fetch models',
       message: error.message,
     });
@@ -251,13 +263,13 @@ router.get('/models', async (req, res) => {
 router.get('/openrouter/models', async (req, res) => {
   try {
     const models = await openrouter.listModels();
-    res.json({
+    return res.status(200).json({
       object: 'list',
       data: models,
     });
   } catch (error) {
     log('error', 'Models listing error', { error: error.message });
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Failed to fetch models',
       message: error.message,
     });
@@ -266,7 +278,7 @@ router.get('/openrouter/models', async (req, res) => {
 
 // GET /health - Service health check
 router.get('/health', (req, res) => {
-  res.json({
+  return res.status(200).json({
     status: 'healthy',
     openrouter: 'connected',
     activeSessions: sseConnections.size,
@@ -275,7 +287,7 @@ router.get('/health', (req, res) => {
 
 // GET /openrouter/health - Service health check (prefixed)
 router.get('/openrouter/health', (req, res) => {
-  res.json({
+  return res.status(200).json({
     status: 'healthy',
     openrouter: 'connected',
     activeSessions: sseConnections.size,
