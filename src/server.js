@@ -25,11 +25,11 @@ export default function createServer() {
   // Health check (no auth required)
   app.use('/health', healthRoutes);
 
-  // API routes at root level (with optional auth)
-  // This enables both /sse and /openrouter/sse
-  app.use('/', authMiddleware, mcpRoutes);
+  // API routes at root level (WITHOUT auth for SSE/root endpoints)
+  // SSE endpoints must be accessible without authentication
+  app.use('/', mcpRoutes);
 
-  // 404 handler
+  // 404 handler - must return JSON
   app.use((req, res) => {
     res.status(404).json({
       error: 'Not Found',
@@ -38,8 +38,15 @@ export default function createServer() {
     });
   });
 
-  // Error handling
-  app.use(errorMiddleware);
+  // Error handling middleware - MUST have 4 parameters (err, req, res, next)
+  app.use((err, req, res, next) => {
+    console.error('🔴 Unhandled Error:', err);
+    
+    res.status(err.statusCode || 500).json({
+      error: err.message || 'Internal Server Error',
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   return app;
 }
